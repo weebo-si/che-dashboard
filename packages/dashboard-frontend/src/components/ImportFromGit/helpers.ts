@@ -22,6 +22,7 @@ import {
 import { buildFactoryLoaderPath } from '@/preload/main';
 import { FactoryLocationAdapter } from '@/services/factory-location-adapter';
 import { REVISION_ATTR } from '@/services/helpers/factoryFlow/buildFactoryParams';
+import type { IGitOauth } from '@/store/GitOauthConfig';
 
 const BR_NAME_REGEX = /^[0-9A-Za-z-./_]{1,256}$/;
 
@@ -50,32 +51,92 @@ export const supportedProviders: api.GitProvider[] = [
   'gitlab',
   'bitbucket-server',
   'azure-devops',
+  'forgejo',
 ];
 
-export function getSupportedGitService(location: string): api.GitProvider {
+/**
+ * Maps a Git server host (e.g. `git.example.com` or `git.example.com:8443`) to its provider.
+ */
+export type ProviderByHost = Map<string, api.GitProvider>;
+
+function toSupportedProvider(
+  name: api.GitOauthProvider | api.GitProvider,
+): api.GitProvider | undefined {
+  // `github_2`, `gitlab_2` are second instances of the same provider
+  let provider = name.replace(/_2$/, '');
+  // Bitbucket Cloud URLs are handled as Bitbucket Server ones
+  if (provider === 'bitbucket') {
+    provider = 'bitbucket-server';
+  }
+  return supportedProviders.find(p => p === provider);
+}
+
+function getHost(endpoint: string): string | undefined {
+  try {
+    return new URL(endpoint).host;
+  } catch (e) {
+    return undefined;
+  }
+}
+
+/**
+ * Builds the host → provider table from the endpoints configured by the administrator (OAuth)
+ * and the endpoints of the user's personal access tokens. OAuth endpoints take precedence.
+ */
+export function buildProviderByHost(
+  gitOauth: IGitOauth[],
+  tokens: api.PersonalAccessToken[],
+): ProviderByHost {
+  const providerByHost: ProviderByHost = new Map();
+  const entries: [string, api.GitOauthProvider | api.GitProvider][] = [
+    ...gitOauth.map(({ endpointUrl, name }): [string, api.GitOauthProvider] => [endpointUrl, name]),
+    ...tokens.map(({ gitProviderEndpoint, gitProvider }): [string, api.GitProvider] => [
+      gitProviderEndpoint,
+      gitProvider,
+    ]),
+  ];
+  for (const [endpoint, name] of entries) {
+    const host = getHost(endpoint);
+    const provider = toSupportedProvider(name);
+    if (host && provider && !providerByHost.has(host)) {
+      providerByHost.set(host, provider);
+    }
+  }
+  return providerByHost;
+}
+
+export function getSupportedGitService(
+  location: string,
+  providerByHost?: ProviderByHost,
+): api.GitProvider {
   const url = new URL(location);
-  const provider = supportedProviders.find(p => url.host.includes(p.split('-')[0]));
+  const provider =
+    providerByHost?.get(url.host) ||
+    supportedProviders.find(p => url.host.includes(p.split('-')[0]));
   if (!provider) {
     throw new Error(`Provider not supported: ${url.host}`);
   }
   return provider;
 }
 
-export function isSupportedGitService(location: string): boolean {
+export function isSupportedGitService(location: string, providerByHost?: ProviderByHost): boolean {
   try {
-    getSupportedGitService(location);
+    getSupportedGitService(location, providerByHost);
     return true;
   } catch (error) {
     return false;
   }
 }
 
-export function getRepositoryUrlFromLocation(location: string): string {
+export function getRepositoryUrlFromLocation(
+  location: string,
+  providerByHost?: ProviderByHost,
+): string {
   let repo: string = location;
   let indexOf: number = 0;
   let service: string = '';
   try {
-    service = getSupportedGitService(location);
+    service = getSupportedGitService(location, providerByHost);
   } catch (error) {
     return repo;
   }
@@ -104,6 +165,12 @@ export function getRepositoryUrlFromLocation(location: string): string {
         repo = location.substring(0, indexOf);
       }
       break;
+    case 'forgejo':
+      indexOf = location.indexOf('/src/');
+      if (indexOf > 0) {
+        repo = location.substring(0, indexOf);
+      }
+      break;
   }
 
   // Strip query parameters for all providers except azure-devops:
@@ -118,11 +185,14 @@ export function getRepositoryUrlFromLocation(location: string): string {
   return repo;
 }
 
-export function getBranchFromLocation(location: string): string | undefined {
+export function getBranchFromLocation(
+  location: string,
+  providerByHost?: ProviderByHost,
+): string | undefined {
   let branch: string | undefined = undefined;
   const pathname = new URL(location).pathname.replace(/^\//, '').replace(/\/$/, '').split('/');
 
-  const service = getSupportedGitService(location);
+  const service = getSupportedGitService(location, providerByHost);
   switch (service) {
     case 'github':
       if (pathname[2] === 'tree') {
@@ -145,6 +215,11 @@ export function getBranchFromLocation(location: string): string | undefined {
       break;
     case 'azure-devops':
       branch = getBranchFromAzureDevOpsLocation(location);
+      break;
+    case 'forgejo':
+      if (pathname[2] === 'src' && pathname[3] === 'branch') {
+        branch = pathname.slice(4).join('/');
+      }
       break;
   }
 
@@ -194,7 +269,11 @@ function setBranchToAzureDevOpsLocation(location: string, branch: string | undef
     : `${url.origin}${url.pathname}?${searchParamsToString(searchParams)}`;
 }
 
-export function setBranchToLocation(location: string, branch: string | undefined): string {
+export function setBranchToLocation(
+  location: string,
+  branch: string | undefined,
+  providerByHost?: ProviderByHost,
+): string {
   if (!FactoryLocationAdapter.isHttpLocation(location)) {
     return branch ? `${location}?${REVISION_ATTR}=${branch}` : location;
   }
@@ -203,7 +282,7 @@ export function setBranchToLocation(location: string, branch: string | undefined
 
   const [user, project] = pathname.split('/');
 
-  const service = getSupportedGitService(location);
+  const service = getSupportedGitService(location, providerByHost);
   if (!branch) {
     if (service === 'azure-devops') {
       url.href = setBranchToAzureDevOpsLocation(location, branch);
@@ -224,6 +303,9 @@ export function setBranchToLocation(location: string, branch: string | undefined
       case 'azure-devops':
         url.href = setBranchToAzureDevOpsLocation(location, branch);
         break;
+      case 'forgejo':
+        url.pathname = `${user}/${project}/src/branch/${branch}`;
+        break;
     }
   }
 
@@ -233,14 +315,15 @@ export function setBranchToLocation(location: string, branch: string | undefined
 function getFactoryParamsFromLocation(
   location: string,
   ignoreBranch?: boolean,
+  providerByHost?: ProviderByHost,
 ): {
   path: string;
   searchParams: URLSearchParams;
 } {
   if (
     !ignoreBranch &&
-    isSupportedGitService(location) &&
-    getSupportedGitService(location) === 'azure-devops'
+    isSupportedGitService(location, providerByHost) &&
+    getSupportedGitService(location, providerByHost) === 'azure-devops'
   ) {
     const url = new URL(location);
     const searchParams = new URLSearchParams(url.search);
@@ -310,20 +393,23 @@ function getFactoryParamsFromLocation(
   return { path, searchParams };
 }
 
-export function getGitRepoOptionsFromLocation(location: string): {
+export function getGitRepoOptionsFromLocation(
+  location: string,
+  providerByHost?: ProviderByHost,
+): {
   location: string | undefined;
   gitBranch: string | undefined;
   remotes: GitRemote[] | undefined;
   devfilePath: string | undefined;
   hasSupportedGitService: boolean;
 } {
-  const { path, searchParams } = getFactoryParamsFromLocation(location);
+  const { path, searchParams } = getFactoryParamsFromLocation(location, false, providerByHost);
   let devfilePath = searchParams.get('devfilePath') || searchParams.get('devfilepath') || undefined;
 
   if (
     !devfilePath &&
-    isSupportedGitService(location) &&
-    getSupportedGitService(location) === 'gitlab'
+    isSupportedGitService(location, providerByHost) &&
+    getSupportedGitService(location, providerByHost) === 'gitlab'
   ) {
     const pathname = new URL(location).pathname.replace(/^\//, '').replace(/\/$/, '').split('/');
     const blobIdx = pathname.indexOf('-');
@@ -347,11 +433,11 @@ export function getGitRepoOptionsFromLocation(location: string): {
     searchParamsToString(searchParams).length === 0
       ? `${path}`
       : `${path}?${searchParamsToString(searchParams)}`;
-  const hasSupportedGitService = isSupportedGitService(location);
+  const hasSupportedGitService = isSupportedGitService(location, providerByHost);
   let gitBranch: string | undefined = undefined;
   if (hasSupportedGitService) {
     try {
-      gitBranch = getBranchFromLocation(location);
+      gitBranch = getBranchFromLocation(location, providerByHost);
     } catch (e) {
       console.log(`Unable to get branch from '${location}'.${common.helpers.errors.getMessage(e)}`);
     }
@@ -440,13 +526,14 @@ export interface IGitRepoOptions {
 export function setGitRepoOptionsToLocation(
   newOptions: IGitRepoOptions,
   currentOptions: IGitRepoOptions,
+  providerByHost?: ProviderByHost,
 ): IGitRepoOptions {
   const state: IGitRepoOptions = {};
   let location = currentOptions.location;
   if (!location) {
     return newOptions;
   }
-  const { path, searchParams } = getFactoryParamsFromLocation(location);
+  const { path, searchParams } = getFactoryParamsFromLocation(location, false, providerByHost);
 
   if (!isEqual(newOptions.remotes, currentOptions.remotes)) {
     state.remotes = newOptions.remotes;
@@ -490,10 +577,11 @@ export function setGitRepoOptionsToLocation(
   if (hasSearchParams) {
     searchParamsStr = decodeURIComponent(searchParamsStr);
   }
-  if (isSupportedGitService(location)) {
+  if (isSupportedGitService(location, providerByHost)) {
     location = setBranchToLocation(
       hasSearchParams ? `${path}?${searchParamsStr}` : `${path}`,
       newOptions.gitBranch,
+      providerByHost,
     );
   } else {
     location = hasSearchParams ? `${path}?${searchParamsStr}` : `${path}`;
