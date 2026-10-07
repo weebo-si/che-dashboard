@@ -14,6 +14,7 @@ import { RootState } from '@/store';
 import {
   selectError,
   selectGitOauth,
+  selectGitProviderByHost,
   selectIsLoading,
   selectProvidersWithToken,
   selectSkipOauthProviders,
@@ -27,6 +28,16 @@ describe('GitOauthConfig, selectors', () => {
       providersWithToken: ['github'],
       skipOauthProviders: ['gitlab'],
       error: 'Something went wrong',
+    },
+    personalAccessToken: {
+      isLoading: false,
+      tokens: [
+        {
+          gitProvider: 'gitlab',
+          gitProviderEndpoint: 'https://git.example.internal',
+        },
+      ],
+      error: undefined,
     },
   } as RootState;
 
@@ -48,6 +59,58 @@ describe('GitOauthConfig, selectors', () => {
   it('should select skipOauthProviders', () => {
     const result = selectSkipOauthProviders(mockState);
     expect(result).toEqual(['gitlab']);
+  });
+
+  it('should select git provider by host', () => {
+    const result = selectGitProviderByHost(mockState);
+    expect(Object.fromEntries(result)).toEqual({
+      'github.com': [{ pathPrefix: '', provider: 'github' }],
+      'git.example.internal': [{ pathPrefix: '', provider: 'gitlab' }],
+    });
+  });
+
+  it('should not rebuild the git provider by host map when only loading flags change', () => {
+    const result = selectGitProviderByHost(mockState);
+    const nextState = {
+      ...mockState,
+      gitOauthConfig: { ...mockState.gitOauthConfig, isLoading: false },
+      personalAccessToken: { ...mockState.personalAccessToken, isLoading: true },
+    } as RootState;
+    expect(selectGitProviderByHost(nextState)).toBe(result);
+  });
+
+  it('should return the same git provider by host map when its content is unchanged', () => {
+    const result = selectGitProviderByHost(mockState);
+    const nextState = {
+      ...mockState,
+      personalAccessToken: {
+        ...mockState.personalAccessToken,
+        tokens: [...mockState.personalAccessToken.tokens],
+      },
+    } as RootState;
+    expect(selectGitProviderByHost(nextState)).toBe(result);
+  });
+
+  it('should return a new git provider by host map when its content changes', () => {
+    const result = selectGitProviderByHost(mockState);
+    const nextState = {
+      ...mockState,
+      personalAccessToken: {
+        ...mockState.personalAccessToken,
+        tokens: [
+          {
+            gitProvider: 'forgejo',
+            gitProviderEndpoint: 'https://forgejo.example.internal',
+          },
+        ],
+      },
+    } as RootState;
+    const nextResult = selectGitProviderByHost(nextState);
+    expect(nextResult).not.toBe(result);
+    expect(Object.fromEntries(nextResult)).toEqual({
+      'github.com': [{ pathPrefix: '', provider: 'github' }],
+      'forgejo.example.internal': [{ pathPrefix: '', provider: 'forgejo' }],
+    });
   });
 
   it('should select error', () => {
