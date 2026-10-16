@@ -74,7 +74,7 @@ export class AddEditModalForm extends React.PureComponent<Props, State> {
 
     const {
       gitProviderEndpoint = nextState.defaultGitProviderEndpoint,
-      gitProviderEndpointIsValid,
+      gitProviderEndpointIsValid: gitProviderEndpointIsValidState,
       gitProvider,
       gitProviderOrganization = '',
       gitProviderOrganizationIsValid,
@@ -83,6 +83,9 @@ export class AddEditModalForm extends React.PureComponent<Props, State> {
       tokenData = '',
       tokenDataIsValid,
     } = nextState;
+    // providers without a default endpoint (e.g. Forgejo) require the user to enter one
+    const gitProviderEndpointIsValid =
+      gitProviderEndpointIsValidState && gitProviderEndpoint !== '';
 
     if (gitProvider === 'azure-devops') {
       const token: api.PersonalAccessToken = {
@@ -186,6 +189,9 @@ export class AddEditModalForm extends React.PureComponent<Props, State> {
         <GitProviderEndpoint
           defaultProviderEndpoint={defaultGitProviderEndpoint}
           providerEndpoint={gitProviderEndpoint}
+          emptyEndpointMessage={
+            gitProvider === 'forgejo' ? 'The Forgejo instance URL is required.' : undefined
+          }
           onChange={(...args) => this.handleChangeGitProviderEndpoint(...args)}
         />
         {gitProvider === 'azure-devops' && (
