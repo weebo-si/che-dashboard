@@ -30,7 +30,9 @@ export type GitOauthProvider =
   | 'gitlab_2'
   | 'bitbucket'
   | 'bitbucket-server'
-  | 'azure-devops';
+  | 'azure-devops'
+  | 'forgejo'
+  | 'forgejo_2';
 
 // The list of available Git providers for PAT
 // https://eclipse.dev/che/docs/stable/end-user-guide/using-a-git-provider-access-token/
@@ -39,7 +41,8 @@ export type GitProvider =
   | 'gitlab'
   | 'bitbucket'
   | 'bitbucket-server'
-  | 'azure-devops';
+  | 'azure-devops'
+  | 'forgejo';
 
 export type PersonalAccessToken = {
   cheUserId: string;
